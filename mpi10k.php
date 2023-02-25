@@ -2,18 +2,20 @@
 <?php
 
 // General settings
+// V1.0 (25.02.2023)
 //---------------------------------------------------------------------------------
-$moxa_ip      = "192.168.178.9"; // ETH-RS232 converter in TCP_Server mode
-$moxa_port    = 8234;            // ETH-RS232 converter port
-$moxa_timeout = 15;              // fsock() connect timeout
-$looptime     = 10;              // time to sleep for next loop run
-$tmp_dir      = "/tmp/inv1/";    // act. Values -> need a trailing  "/" !!!
-$bud_dir      = "/home/pi/inv1"; // Folder for daily backup
-$script_name  = "mpi10k.php";    // script name
-$logfilename  = "/tmp/mpi10k_";  //Debugging Logfile
+$moxa_ip      = "192.168.178.9";         // ETH-RS232 converter in TCP_Server mode
+$moxa_port    = 8234;                    // ETH-RS232 converter port
+$moxa_timeout = 15;                      // fsock() connect timeout
+$looptime     = 10;                      // time to sleep for next loop run
+$tmp_dir      = "/tmp/inv1/";            // act. Values -> need a trailing  "/" !!!
+$bud_dir      = "/home/pi/inv1";         // Folder for daily backup
+$script_name  = "mpi10k.php";            // script name
+$logfilename  = "/tmp/mpi10k_";          // Debugging Logfile
+$mqtt_send    = "/home/pi/mqtt_send.sh"; // MQTT send script
 //---------------------------------------------------------------------------------
 // Logging/Debugging settings:
-$debug  = 0;        // advanced debugging
+$debug  = 1;        // advanced debugging
 $debug2 = 0;        // advanced debugging CLI only
 $debug3 = 0;        // advanced debugging show send(cmd) data
 $debug4 = 0;        // advanced debugging show summary data
@@ -34,10 +36,10 @@ $daybase      = 0;
 $daybase_yday = 0;
 $daypower_old = 0;
 $totalpwr_old = 0;
-$battamps_old = 0;
 $ac_wh_day    = 0;
 $error        = [];
 $delta        = 99;     // power decimals init val
+$kwh          = 0;      // power with decimals
 $resp         = "";
 $is_error_write = false;
 
@@ -160,43 +162,30 @@ while (true) {
     $loopcounter=0;
   }
 
-  if ($resp=send_cmd("^P003GS",26)) {      // Query general status
+  if ($resp=send_cmd("^P003GS",26)) {                      // Query general status
     store_general_status();
+    $battpower = round($battvolt*$battamps);
   }
-  if ($resp = send_cmd("^P003PS",22)) {    // Query power status
+  if ($resp = send_cmd("^P003PS",22)) {                    // Query power status
     store_power_status(); 
+    $dc_power  = $pv1power + $pv2power;
   }
-  if ($resp = send_cmd("^P005INGS",11)) {  // Query internal general status
+  if ($resp = send_cmd("^P005INGS",11)) {                  // Query internal general status
     store_internal_general_status();
   }
-  if ($resp = send_cmd("^P007EMINFO",6)) { // EMINFO query zero feed-in status
+  if ($resp = send_cmd("^P007EMINFO",6)) {                 // EMINFO query zero feed-in status
     store_eminfo();
   }
-
-  //Add collected values to correct variables:
-  $battvolt_old = $battvolt;
-  $battamps_old = $battamps;
-  $battpower    = round($battvolt*$battamps);
-  $dc_power     = $pv1power + $pv2power;
-
-  // Get today's generated power
-  $month = date("m");
-  $year  = date("Y");
-  $day   = date("d");
-  $check = cal_crc_half("^P014ED".$year.$month.$day);
-
-  if ($resp = send_cmd("^P014ED".$year.$month.$day.$check,1)) {   // Wh today
-     $daypwr = $resp[0] / 1000.0;
-     shell_exec("/home/pi/mqtt_send.sh KWh_today $daypwr");       // MQTT -> HA
+  $daypwr = get_daypower();                                // kWh generated today
+  if ($daypwr >= 0.0) {
+     shell_exec("$mqtt_send KWh_today $daypwr");           // MQTT -> HA
   }
-  if ($resp = send_cmd("^P003ET",1)) {                            // get kWh total
-     $totalpwr = intval($resp[0]);
-     $pout     = $dc_power - $battpower;
-     $eigen    = $pout - $eminfo["feed"];
-     if ($debug4) printf("## PV-PWR: %4d W, BAT-PWR: %5d W, ACT: %4d W, FEED: %4d W (%3d), RES: %4d W, Total: %5d kWh, Day: %2.3f kWh\n",
-        $dc_power,$battpower,$eminfo["pvpow"],$eminfo["feed"],$acouttotal,$eminfo["resrv"],$totalpwr,$daypwr );
+  if ($resp = send_cmd("^P003ET",1)) {                     // get total kWh
+     $totalpwr  = intval($resp[0]);                        // total generated kWh
+     $pout      = $dc_power - $battpower;
+     $eigen     = $pout - $eminfo["feed"];
  
-     if ($ac_wh_day == 0) {
+     if ($ac_wh_day == 0) {                                // startup script
         $ac_wh_day = read_file("/run/ac_wh_day");
         if ($debug4) echo "INIT: ac_wh_day = $ac_wh_day \n";
      }
@@ -204,64 +193,44 @@ while (true) {
      $ac_wh_day += ($acouttotal  / (3600 / $ltime)) * -1;
      $wh         = round($ac_wh_day,0);
      $timer1     = microtime(true);                       // loop timer for Wh calculation
-     shell_exec("/home/pi/mqtt_send.sh AC_wh     $wh");
      if (date("Hi") == "0000") {                          // that is a new day
         $wh = 0;                                          // reset AV-Wh-today
         $ac_wh_day = 0;
      }
      write2file("/run/ac_wh_day", $wh);                   // write to RAM disk
 
-     shell_exec("/home/pi/mqtt_send.sh INV_mode  $modus");        // MQTT -> HA
-     shell_exec("/home/pi/mqtt_send.sh PV1_power $pv1power");
-     shell_exec("/home/pi/mqtt_send.sh PV2_power $pv2power");
-     shell_exec("/home/pi/mqtt_send.sh PV_total  $dc_power");
-     shell_exec("/home/pi/mqtt_send.sh BAT_power $battpower");
-     shell_exec("/home/pi/mqtt_send.sh BAT_amps  $battamps");
-     shell_exec("/home/pi/mqtt_send.sh AC_feed   " . $eminfo["feed"]);
-     shell_exec("/home/pi/mqtt_send.sh INV_temp  $intemp");
-     $total_energy = calc_total_energy();                         // total kWh energy with decimals
-     shell_exec("/home/pi/mqtt_send.sh KWh_total $total_energy");
-  }
-        
-  //schreibe akt. Daten in Files, die wiederum von 123solar drei Mal pro Sek. abgefragt werden:
-  $ts = time();   //akt. Timestamp abfragen!
+     shell_exec("$mqtt_send AC_wh     $wh");              // MQTT -> HA
+     shell_exec("$mqtt_send INV_mode  $modus");           // MQTT -> HA
+     shell_exec("$mqtt_send PV1_power $pv1power");
+     shell_exec("$mqtt_send PV2_power $pv2power");
+     shell_exec("$mqtt_send PV_total  $dc_power");
+     shell_exec("$mqtt_send BAT_power $battpower");
+     shell_exec("$mqtt_send BAT_amps  $battamps");
+     shell_exec("$mqtt_send AC_feed " . $eminfo["feed"]);
+     shell_exec("$mqtt_send INV_temp  $intemp");
+     $total_energy = calc_total_energy();                 // total kWh energy with decimals
+     shell_exec("$mqtt_send KWh_total $total_energy");
 
-  // Warte bis naechster Durchlauf
+     if ($debug4) printf("## PV-PWR: %4d W, BAT-PWR: %5d W, ACT: %4d W, FEED: %4d W (%3d), RES: %4d W, Total: %5d kWh, Day: %2.3f kWh\n",
+        $dc_power,$battpower,$eminfo["pvpow"],$eminfo["feed"],$acouttotal,$eminfo["resrv"],$totalpwr,$daypwr );
+  }
+  $ts = time();   //akt. Timestamp 
   sleep($looptime);
 }
 //---------------------------------------------------------------------------------------------------------
 // END OF MAIN LOOP 
 //---------------------------------------------------------------------------------------------------------
 
-// Some functions
-function hex2str($hex)
-{
-    $str = '';
-    for($i=0;$i<strlen($hex);$i+=2) $str .= chr(hexdec(substr($hex,$i,2)));
-    return $str;
-}
-
-function ascii2hex($ascii) {
-  $hex = '';
-  for ($i = 0; $i < strlen($ascii); $i++) {
-    $byte = strtoupper(dechex(ord($ascii{$i})));
-    $byte = str_repeat('0', 2 - strlen($byte)).$byte;
-    $hex.=$byte." ";
-  }
-  return $hex;
-}
-
 function cal_crc_half($pin) //-------------------------------------------------------------------------------------------
 {
-        $sum = 0;
-        for($i = 0; $i < strlen($pin); $i++)
-        {
-                $sum += ord($pin[$i]);
-        }
-        $sum = $sum % 256;
-        if (strlen($sum)==2) $sum="0".$sum;
-        if (strlen($sum)==1) $sum="00".$sum;
-        return $sum;
+  $sum = 0;
+  for ($i = 0; $i < strlen($pin); $i++) {
+     $sum += ord($pin[$i]);
+  }
+  $sum = $sum % 256;
+  if (strlen($sum)==2) $sum="0".$sum;
+  if (strlen($sum)==1) $sum="00".$sum;
+  return $sum;
 }
 
 function read_file($filename) //-------------------------------------------------------------------------------------------
@@ -535,6 +504,21 @@ function store_internal_general_status() { //-----------------------------------
   }
 }
 
+function get_daypower() // Get today's generated power -------------------------------------------------------------
+{
+  global $debug;
+
+  $month = date("m");
+  $year  = date("Y");
+  $day   = date("d");
+  $check = cal_crc_half("^P014ED".$year.$month.$day);             // cecksum
+
+  if ($resp = send_cmd("^P014ED".$year.$month.$day.$check,1)) {   // Wh today
+     return($resp[0] / 1000.0)  ;                                 // compute kWh
+  }
+  return -1;
+}
+
 function store_eminfo() { //----------------------------------------------------------------------------------------
   global $resp,$debug,$eminfo;
 
@@ -561,27 +545,29 @@ function store_eminfo() { //----------------------------------------------------
 
 function calc_total_energy()  //------------------------------------------------------------------------------------
 {
-  global $debug,$daypwr,$totalpwr,$totalpwr_old,$delta;
+  global $debug,$daypwr,$totalpwr,$totalpwr_old,$delta,$kwh;
+ 
+  if ($daypwr > 0.0) {
+    if ($delta == 99) {                                        // 99 = 1st run after prg start
+      $delta = read_file("/run/dc_wh_frac");
+    }
+    $frac1 = round($daypwr - floor($daypwr),3);
 
-  if ($delta == 99) {                                       // 99 = 1st run after prg start
-    $delta = read_file("/run/dc_wh_frac");
-  }
-  $frac1 = $daypwr - floor($daypwr);
+    if ($frac1 < $delta)  $frac2 = $frac1 - $delta + 1.0;      // adjust decimals
+    else                  $frac2 = $frac1 - $delta;
+    if ($delta == 0) $kwh = $totalpwr;                         // when running after reboot
+    else             $kwh = $totalpwr + $frac2;                // add decimals
 
-  if ($frac1 < $delta)  $frac2 = $frac1 - $delta + 1.0;      // adjust decimals
-  else                  $frac2 = $frac1 - $delta;
-  if ($delta == 0) $kwh = $totalpwr;                         // when running after reboot
-  else             $kwh = $totalpwr + $frac2;                // add decimals
-
-  if ($totalpwr_old != 0 && ($totalpwr_old != $totalpwr)) {  // totalpwr changed
-    $delta = $daypwr - floor($daypwr);                       // compute diff to daypwr decimals
-    write2file("/run/dc_wh_frac", $delta);                   // write to RAM disk
-  }
-  $totalpwr_old = $totalpwr;                                 // store old val
-  if ($debug) {
-    echo " kWh-total : $totalpwr\n";
-    echo " kWh-today : $daypwr\n";
-    echo " kWh+decim : $kwh (frac1=$frac1)(delta=$delta)\n";
+    if ($totalpwr_old != 0 && ($totalpwr_old != $totalpwr)) {  // totalpwr changed
+      $delta = round($daypwr - floor($daypwr),3);              // compute diff to daypwr decimals
+      write2file("/run/dc_wh_frac", $delta);                   // write to RAM disk
+    }
+    $totalpwr_old = $totalpwr;                                 // store old val
+    if ($debug) {
+      echo " kWh-total : $totalpwr\n";
+      echo " kWh-today : $daypwr\n";
+      echo " kWh+decim : $kwh (frac1=$frac1)(delta=$delta)\n";
+    }
   }
   return($kwh);
 }
