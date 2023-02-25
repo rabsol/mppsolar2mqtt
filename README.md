@@ -8,6 +8,7 @@ to connect to the inverter by Solarpower software and change parameters without 
 anything. Just stop the script and run Solarpower via a virtual COM port.
 
 The MQTT topics need to be initialized before being used with (mqtt-init.sh). The actual values
-are sent via the (mqtt_send.sh) script from within php (syscall).
+are sent via the (mqtt_send.sh) script from within php (syscall). Since the inverter delivers 
+much more data points you can easily extend the scripts to provide more info’s via MQTT.
 
 IP addresses and credentials need to be set in the config sections of the scripts.
