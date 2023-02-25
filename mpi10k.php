@@ -55,15 +55,15 @@ if (!file_exists($bud_dir)) {    // Folder for daily backup
 openlog($script_name, LOG_PID | LOG_PERROR, LOG_LOCAL0);
 // open debug logfile
 if ($debug) $fp_log = @fopen($logfilename.date("Y-m-d").".log", "a");
-// Get model,version and protocolID for infini_startup.php
-if (!$fp = @fsockopen($moxa_ip, $moxa_port, $errno, $errstr, $moxa_timeout)) { // Open connection to the inverter
+
+// open connection to ETH-RS232 converter
+if (!$fp = @fsockopen($moxa_ip, $moxa_port, $errno, $errstr, $moxa_timeout)) {
   echo "FSOCK OPEN ($moxa_ip : $moxa_port: $errstr) failed!!!\n";
   exit(1);
 }
 stream_set_timeout($fp, $moxa_timeout);   // shorten TCP timer for answers from 60 sec to 10
 
-// Query protocol ID
-if ($resp = send_cmd("^P003PI",1)) {;
+if ($resp = send_cmd("^P003PI",1)) {;     // Query protocol ID
   $protid = intval($resp[0]);
   if ($debug) echo "ProtocolID: " . $protid . "\n";
   if ($protid != 17) {
@@ -76,9 +76,8 @@ else {
   exit(1);
 }
 
-
-//$resp   = send_cmd("^P003ET",0);
-//$resp   = send_cmd("^P003DM",0);
+//$resp   = send_cmd("^P003ET",0);    // Query total generated energy
+//$resp   = send_cmd("^P003DM",0);    // Query machine model
 //$resp   = send_cmd("^P003WS",0);    // Query warning status [A=Solar input 1 loss]
 //$resp   = send_cmd("^P004CFS",0);   // Query current fault status
 //$resp   = send_cmd("^P004FET",0);   // Query first generated energy saved time (2022061521)
@@ -108,7 +107,7 @@ if ($debug) echo "CPU-1 Version: $version1 ($cpu1_date)\n";
 if ($resp =  send_cmd("^P005VFW2",1)) $version2 = $resp[0];
 if ($debug) echo "CPU-2 Version: $version2 ($cpu2_date)\n";
 
-// Modell  abfragen
+// Query Inverter Modell
 if ($resp = send_cmd("^P003MD",9)) {
   $modelcode    = $resp[0];
   $modelva      = $resp[1];
@@ -324,7 +323,7 @@ function get_alarms() // -------------------------------------------------------
 	fclose($fpA);
 }
 
-function get_wmode() { //-----------------------------------------------------------
+function get_wmode() { //------------------------------------------------------------------------------------
    global $debug, $resp, $modusT;
 
    //Query inverter working mode -- "^P004MOD"
