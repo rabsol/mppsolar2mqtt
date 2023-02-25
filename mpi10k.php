@@ -2,7 +2,7 @@
 <?php
 
 // General settings
-// V1.0 (25.02.2023)
+// V1.1 (25.02.2023)
 //---------------------------------------------------------------------------------
 $moxa_ip      = "192.168.178.9";         // ETH-RS232 converter in TCP_Server mode
 $moxa_port    = 8234;                    // ETH-RS232 converter port
