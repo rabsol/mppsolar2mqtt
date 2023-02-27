@@ -133,9 +133,8 @@ if (strlen($resp[0])==14) {   // Datestring received from inverter
     echo "Invert Time  : $invzeit \n";
   }
   if (substr($invzeit,0,11)!=substr($syszeit,0,11)) {   // don't check the seconds
-    if ($debug) echo "**** Inverter clock needs adjustment *****";
     $datum=date('ymdHis');
-    echo "DATUM im Server:".$datum."\n";
+    if ($debug) echo "**** Inverter clock needs adjustment! set: $datum *****";
     fwrite($fp, "^S016DAT".$datum.chr(0x0d));
     $resp = parse_resp();
     echo "RESP:".$resp[0]."\n";
