@@ -15,7 +15,7 @@ $logfilename  = "/tmp/mpi10k_";          // Debugging Logfile
 $mqtt_send    = "/home/pi/mqtt_send.sh"; // MQTT send script
 //---------------------------------------------------------------------------------
 // Logging/Debugging settings:
-$debug  = 1;        // advanced debugging
+$debug  = 0;        // advanced debugging
 $debug2 = 0;        // advanced debugging CLI only
 $debug3 = 0;        // advanced debugging show send(cmd) data
 $debug4 = 0;        // advanced debugging show summary data
@@ -518,7 +518,7 @@ function get_daypower() // Get today's generated power -------------------------
 }
 
 function store_eminfo() { //----------------------------------------------------------------------------------------
-  global $resp,$debug,$eminfo;
+  global $resp,$debug,$eminfo,$battpower;
 
   $eminfo["gpmp"]  = intval($resp[1]);  // the maximum output power for feeding grid
   $eminfo["pvpow"] = intval($resp[2]);  // current used PV power output
@@ -530,6 +530,7 @@ function store_eminfo() { //----------------------------------------------------
     echo " MaxGridPow: " . $eminfo['gpmp']  . " W\n";
     echo " PV-Power  : " . $eminfo['pvpow'] . " W\n";
     echo " AC-Power  : " . $eminfo['feed']  . " W\n";
+    echo " DC-Power  : " . $battpower       . " W\n";
     echo " ReservPow : " . $eminfo['resrv'] . " W\n";
     echo "\n";
   }
@@ -564,9 +565,10 @@ function calc_total_energy()  //------------------------------------------------
     if ($debug) {
       echo " kWh-total : $totalpwr\n";
       echo " kWh-today : $daypwr\n";
-      echo " kWh+decim : $kwh (frac1=$frac1)(delta=$delta)\n";
+      echo " kWh+decim : $kwh (frac1=$frac1)(delta=$delta) " . date("Y-m-d H:i:s") . " \n";
     }
   }
+  else $delta = 0.0;                                           // reset delta at 24:00
   return($kwh);
 }
 
