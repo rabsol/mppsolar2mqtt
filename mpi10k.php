@@ -7,7 +7,8 @@
 $moxa_ip      = "192.168.178.9";         // ETH-RS232 converter in TCP_Server mode
 $moxa_port    = 8234;                    // ETH-RS232 converter port
 $moxa_timeout = 15;                      // fsock() connect timeout
-$looptime     = 10;                      // time to sleep for next loop run
+$sleeptime    = 15;                      // time to sleep for next loop run
+$maxloop      = 40;                      // 40 x 15s = 10min
 $tmp_dir      = "/tmp/inv1/";            // act. Values -> need a trailing  "/" !!!
 $bud_dir      = "/home/pi/inv1";         // Folder for daily backup
 $script_name  = "mpi10k.php";            // script name
@@ -15,7 +16,7 @@ $logfilename  = "/tmp/mpi10k_";          // Debugging Logfile
 $mqtt_send    = "/home/pi/mqtt_send.sh"; // MQTT send script
 //---------------------------------------------------------------------------------
 // Logging/Debugging settings:
-$debug  = 0;        // advanced debugging
+$debug  = 1;        // advanced debugging
 $debug2 = 0;        // advanced debugging CLI only
 $debug3 = 0;        // advanced debugging show send(cmd) data
 $debug4 = 0;        // advanced debugging show summary data
@@ -26,20 +27,16 @@ error_reporting(E_ERROR | E_PARSE);
 $eminfo = [0,0];
 
 
-// init variables
-$loopcounter  = 0;
-$storage_stat = 1;
-$log2console  = 0;
+// init variables ------------
+$loopcounter  = $maxcloop;   // main loops before reading alarm status
 $fp_log       = 0;
 $totalcounter = 0;
-$daybase      = 0;
-$daybase_yday = 0;
 $daypower_old = 0;
 $totalpwr_old = 0;
 $ac_wh_day    = 0;
 $error        = [];
-$delta        = 99;     // power decimals init val
-$kwh          = 0;      // power with decimals
+$delta        = 99;          // power decimals init val
+$kwh          = 0;           // power with decimals
 $resp         = "";
 $is_error_write = false;
 
@@ -146,20 +143,19 @@ echo " $version1 ($cpu1_date) / $version2 ($cpu2_date) \n";
 echo " ----\n";
 
 $timer1 = microtime(true);     // init loop timer for Wh calculation once
-$loopcounter=100;              // trigger: get_alarms() & "inverter working mode" queries
 
 //---------------------------------------------------------------------------------------------------------
 // MAIN LOOP
 //---------------------------------------------------------------------------------------------------------
 while (true) { 
-  if ($debug) echo "---------------------------------------------------------------------------------------\n";
+  $minutet = !($loopcounter % 4);   // true every 60s
+  if ($debug && $minutet) echo "------------------------------------------------------------------------\n";
 
-  if ($loopcounter++ == 100) { // 100 = Query alarms about every 6 minutes 
-    get_alarms();              // check inverter alarms/warnings
-    $modus = get_wmode();      // get inverter working mode
+  if ($loopcounter++ == $maxloop) { // 40 = Query alarms about every 10 minutes 
+    get_alarms();                   // check inverter alarms/warnings
+    $modus = get_wmode();           // get inverter working mode
     $loopcounter=0;
   }
-
   if ($resp=send_cmd("^P003GS",26)) {                      // Query general status
     store_general_status();
     $battpower = round($battvolt*$battamps);
@@ -180,12 +176,10 @@ while (true) {
   }
   if ($resp = send_cmd("^P003ET",1)) {                     // get total kWh
      $totalpwr  = intval($resp[0]);                        // total generated kWh
-     $pout      = $dc_power - $battpower;
-     $eigen     = $pout - $eminfo["feed"];
  
      if ($ac_wh_day == 0) {                                // startup script
         $ac_wh_day = read_file("/run/ac_wh_day");
-        if ($debug4) echo "INIT: ac_wh_day = $ac_wh_day \n";
+        if ($debug) echo "INIT: ac_wh_day = $ac_wh_day \n";
      }
      $ltime      = (microtime(true) - $timer1);           // loop time in seconds
      $ac_wh_day += ($acouttotal  / (3600 / $ltime)) * -1;
@@ -197,8 +191,8 @@ while (true) {
      }
      write2file("/run/ac_wh_day", $wh);                   // write to RAM disk
 
-     shell_exec("$mqtt_send AC_wh     $wh");              // MQTT -> HA
-     shell_exec("$mqtt_send INV_mode  $modus");           // MQTT -> HA
+     shell_exec("$mqtt_send AC_wh     $wh");              // MQTT -> Home Assistant
+     shell_exec("$mqtt_send INV_mode  $modus");
      shell_exec("$mqtt_send PV1_power $pv1power");
      shell_exec("$mqtt_send PV2_power $pv2power");
      shell_exec("$mqtt_send PV_total  $dc_power");
@@ -213,7 +207,7 @@ while (true) {
         $dc_power,$battpower,$eminfo["pvpow"],$eminfo["feed"],$acouttotal,$eminfo["resrv"],$totalpwr,$daypwr );
   }
   $ts = time();   //akt. Timestamp 
-  sleep($looptime);
+  sleep($sleeptime);
 }
 //---------------------------------------------------------------------------------------------------------
 // END OF MAIN LOOP 
@@ -266,16 +260,15 @@ function write2file($filename, $value) //---------------------------------------
 
 function logging($txt, $write2syslog=false)
 {
-        global $fp_log, $log2console, $debug, $ts;
-        if ($log2console) echo date("Y-m-d H:i:s").": $txt<br />\n";
-        if ($debug)
-        {
-                list($ts) = explode(".",microtime(true));
-                $dt = new DateTime(date("Y-m-d H:i:s.",$ts));
-                $logdate = $dt->format("Y-m-d H:i:s.u");
-                echo date("Y-m-d H:i:s").": $txt\n";
-                fwrite($fp_log, date("Y-m-d H:i:s").": $txt<br />\n");
-        }
+  global $fp_log, $debug, $ts;
+
+  if ($debug) {
+    list($ts) = explode(".",microtime(true));
+    $dt = new DateTime(date("Y-m-d H:i:s.",$ts));
+    $logdate = $dt->format("Y-m-d H:i:s.u");
+    echo date("Y-m-d H:i:s").": $txt\n";
+    fwrite($fp_log, date("Y-m-d H:i:s").": $txt<br />\n");
+  }
 }
 
 function get_alarms() // --------------------------------------------------------------------------------
@@ -518,14 +511,14 @@ function get_daypower() // Get today's generated power -------------------------
 }
 
 function store_eminfo() { //----------------------------------------------------------------------------------------
-  global $resp,$debug,$eminfo,$battpower;
+  global $resp,$debug,$eminfo,$battpower,$minutet;
 
   $eminfo["gpmp"]  = intval($resp[1]);  // the maximum output power for feeding grid
   $eminfo["pvpow"] = intval($resp[2]);  // current used PV power output
   $eminfo["feed"]  = intval($resp[3]);  // current AC power output (to grid)
   $eminfo["resrv"] = intval($resp[4]);  // reserve AC power (max_ac_power - feed)
 
-  if ($debug) { 
+  if ($debug && $minutet) {             // once a minute
     echo " -- EMINFO Command --\n";
     echo " MaxGridPow: " . $eminfo['gpmp']  . " W\n";
     echo " PV-Power  : " . $eminfo['pvpow'] . " W\n";
@@ -544,7 +537,7 @@ function store_eminfo() { //----------------------------------------------------
 
 function calc_total_energy()  //------------------------------------------------------------------------------------
 {
-  global $debug,$daypwr,$totalpwr,$totalpwr_old,$delta,$kwh;
+  global $debug,$daypwr,$totalpwr,$totalpwr_old,$delta,$kwh,$total_energy,$minutet;
  
   if ($daypwr > 0.0) {
     if ($delta == 99) {                                        // 99 = 1st run after prg start
@@ -562,14 +555,14 @@ function calc_total_energy()  //------------------------------------------------
       write2file("/run/dc_wh_frac", $delta);                   // write to RAM disk
     }
     $totalpwr_old = $totalpwr;                                 // store old val
-    if ($debug) {
+    if ($debug && $minutet) {                                  // once a minute
       echo " kWh-total : $totalpwr\n";
       echo " kWh-today : $daypwr\n";
       echo " kWh+decim : $kwh (frac1=$frac1)(delta=$delta) " . date("Y-m-d H:i:s") . " \n";
     }
   }
-  else $delta = 0.0;                                           // reset delta at 24:00
-  return($kwh);
+  if ($total_energy > $kwh) return($total_energy);             // do not count backwards
+  else                      return($kwh);                      // when the next day starts
 }
 
 function send_cmd($cmd, $num) {  //----------------------------------------------------------------------------------
