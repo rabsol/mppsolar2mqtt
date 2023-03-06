@@ -9,11 +9,12 @@ $moxa_port    = 8234;                    // ETH-RS232 converter port
 $moxa_timeout = 15;                      // fsock() connect timeout
 $sleeptime    = 15;                      // time to sleep for next loop run
 $maxloop      = 40;                      // 40 x 15s = 10min
+$whday_file   = "/run/ac_wh_day";        // store Wh per day in RAM disk
 $tmp_dir      = "/tmp/inv1/";            // act. Values -> need a trailing  "/" !!!
 $bud_dir      = "/home/pi/inv1";         // Folder for daily backup
-$script_name  = "mpi10k.php";            // script name
 $logfilename  = "/tmp/mpi10k_";          // Debugging Logfile
 $mqtt_send    = "/home/pi/mqtt_send.sh"; // MQTT send script
+$script_name  = "mpi10k.php";            // script name
 //---------------------------------------------------------------------------------
 // Logging/Debugging settings:
 $debug  = 1;        // advanced debugging
@@ -142,7 +143,11 @@ echo " Start-Time: ". date("Y-m-d H:i:s") . " / $model \n";
 echo " $version1 ($cpu1_date) / $version2 ($cpu2_date) \n";
 echo " ----\n";
 
-$timer1 = microtime(true);     // init loop timer for Wh calculation once
+if (file_exists($whday_file)) {                        // run after reboot or first time?
+  $ac_wh_day = read_file($whday_file);                 // read AC Wh per day from file
+  if ($debug) echo " INIT: ac_wh_day = $ac_wh_day \n";
+}
+$timer1 = microtime(true);                             // init loop timer for Wh calculation once
 
 //---------------------------------------------------------------------------------------------------------
 // MAIN LOOP
@@ -156,31 +161,26 @@ while (true) {
     $modus = get_wmode();           // get inverter working mode
     $loopcounter=0;
   }
-  if ($resp=send_cmd("^P003GS",26)) {                      // Query general status
+  if ($resp=send_cmd("^P003GS",26)) {                     // Query general status
     store_general_status();
     $battpower = round($battvolt*$battamps);
   }
-  if ($resp = send_cmd("^P003PS",22)) {                    // Query power status
+  if ($resp = send_cmd("^P003PS",22)) {                   // Query power status
     store_power_status(); 
     $dc_power  = $pv1power + $pv2power;
   }
-  if ($resp = send_cmd("^P005INGS",11)) {                  // Query internal general status
+  if ($resp = send_cmd("^P005INGS",11)) {                 // Query internal general status
     store_internal_general_status();
   }
-  if ($resp = send_cmd("^P007EMINFO",6)) {                 // EMINFO query zero feed-in status
+  if ($resp = send_cmd("^P007EMINFO",6)) {                // EMINFO query zero feed-in status
     store_eminfo();
   }
-  $daypwr = get_daypower();                                // kWh generated today
-  if ($daypwr >= 0.0) {
-     shell_exec("$mqtt_send KWh_today $daypwr");           // MQTT -> HA
+  if (($daypwr = get_daypower()) >= 0.0) {                // kWh generated today
+     shell_exec("$mqtt_send KWh_today $daypwr");          // MQTT -> HA
   }
-  if ($resp = send_cmd("^P003ET",1)) {                     // get total kWh
-     $totalpwr  = intval($resp[0]);                        // total generated kWh
+  if ($resp = send_cmd("^P003ET",1)) {                    // get total kWh
+     $totalpwr  = intval($resp[0]);                       // total generated kWh
  
-     if ($ac_wh_day == 0) {                                // startup script
-        $ac_wh_day = read_file("/run/ac_wh_day");
-        if ($debug) echo "INIT: ac_wh_day = $ac_wh_day \n";
-     }
      $ltime      = (microtime(true) - $timer1);           // loop time in seconds
      $ac_wh_day += ($acouttotal  / (3600 / $ltime)) * -1;
      $wh         = round($ac_wh_day,0);
@@ -189,7 +189,7 @@ while (true) {
         $wh = 0;                                          // reset AV-Wh-today
         $ac_wh_day = 0;
      }
-     write2file("/run/ac_wh_day", $wh);                   // write to RAM disk
+     write2file($whday_file, $wh);                        // write Wh per day to RAM disk
 
      shell_exec("$mqtt_send AC_wh     $wh");              // MQTT -> Home Assistant
      shell_exec("$mqtt_send INV_mode  $modus");
@@ -503,7 +503,7 @@ function get_daypower() // Get today's generated power -------------------------
   $year  = date("Y");
   $day   = date("d");
   $check = cal_crc_half("^P014ED".$year.$month.$day);             // cecksum
-
+  usleep(300000);                                                 // wait for 0.3 seconds
   if ($resp = send_cmd("^P014ED".$year.$month.$day.$check,1)) {   // Wh today
      return($resp[0] / 1000.0)  ;                                 // compute kWh
   }
@@ -543,18 +543,18 @@ function calc_total_energy()  //------------------------------------------------
     if ($delta == 99) {                                        // 99 = 1st run after prg start
       $delta = read_file("/run/dc_wh_frac");
     }
-    $frac1 = round($daypwr - floor($daypwr),3);
-
-    if ($frac1 < $delta)  $frac2 = $frac1 - $delta + 1.0;      // adjust decimals
-    else                  $frac2 = $frac1 - $delta;
-    if ($delta == 0) $kwh = $totalpwr;                         // when running after reboot
-    else             $kwh = $totalpwr + $frac2;                // add decimals
 
     if ($totalpwr_old != 0 && ($totalpwr_old != $totalpwr)) {  // totalpwr changed
       $delta = round($daypwr - floor($daypwr),3);              // compute diff to daypwr decimals
       write2file("/run/dc_wh_frac", $delta);                   // write to RAM disk
     }
     $totalpwr_old = $totalpwr;                                 // store old val
+    $frac1 = round($daypwr - floor($daypwr),3);
+
+    if ($frac1 < $delta)  $frac2 = $frac1 - $delta + 1.0;      // adjust decimals
+    else                  $frac2 = $frac1 - $delta;
+    if ($delta == 0) $kwh = $totalpwr;                         // when running after reboot
+    else             $kwh = $totalpwr + $frac2;                // add decimals
     if ($debug && $minutet) {                                  // once a minute
       echo " kWh-total : $totalpwr\n";
       echo " kWh-today : $daypwr\n";
