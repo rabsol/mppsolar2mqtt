@@ -2,7 +2,7 @@
 <?php
 
 // General settings
-// V1.1 (25.02.2023)
+// V1.2 (09.03.2023)
 //---------------------------------------------------------------------------------
 $moxa_ip      = "192.168.178.9";         // ETH-RS232 converter in TCP_Server mode
 $moxa_port    = 8234;                    // ETH-RS232 converter port
@@ -17,7 +17,7 @@ $mqtt_send    = "/home/pi/mqtt_send.sh"; // MQTT send script
 $script_name  = "mpi10k.php";            // script name
 //---------------------------------------------------------------------------------
 // Logging/Debugging settings:
-$debug  = 1;        // advanced debugging
+$debug  = 0;        // advanced debugging
 $debug2 = 0;        // advanced debugging CLI only
 $debug3 = 0;        // advanced debugging show send(cmd) data
 $debug4 = 0;        // advanced debugging show summary data
@@ -26,7 +26,6 @@ error_reporting(E_ERROR | E_PARSE);
 
 // Inverter Data Arrays --
 $eminfo = [0,0];
-
 
 // init variables ------------
 $loopcounter  = $maxcloop;   // main loops before reading alarm status
@@ -70,7 +69,7 @@ if ($resp = send_cmd("^P003PI",1)) {;     // Query protocol ID
   }
 }
 else {
-  echo "No response on ProtocolID\n";
+  echo "No response on ProtocolID! Inverter online?\n";
   exit(1);
 }
 
@@ -133,11 +132,11 @@ if (strlen($resp[0])==14) {   // Datestring received from inverter
   if (substr($invzeit,0,11)!=substr($syszeit,0,11)) {   // don't check the seconds
     $datum=date('ymdHis');
     if ($debug) echo "**** Inverter clock needs adjustment! set: $datum *****";
-    fwrite($fp, "^S016DAT".$datum.chr(0x0d));
-    $resp = parse_resp();
+    $resp = send_cmd("^S016DAT".$datum.chr(0x0d));
     echo "RESP:".$resp[0]."\n";
   }
 }
+
 echo "----------------------------------------------------------------------------------\n";
 echo " Start-Time: ". date("Y-m-d H:i:s") . " / $model \n";
 echo " $version1 ($cpu1_date) / $version2 ($cpu2_date) \n";
